@@ -316,6 +316,12 @@ void rotate_ham(wanndata * hout, wanndata * hin, double lattice[3][3], double ro
                 mr_i = (orb_info+iorb_out)->mr;
                 ms_i = (orb_info+iorb_out)->ms;
 
+                // Skip if orbitals have different angular momentum
+                // Hamiltonian elements between different l are zero by symmetry
+                if(l1 != l2){
+                    continue;
+                }
+
                 rvec_in = vector_sub(rvec_in2, rvec_in1);
                 irpt_in = find_vector(rvec_in, hin->rvec, hin->nrpt);
                 if(irpt_in == -1){
