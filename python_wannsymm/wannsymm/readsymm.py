@@ -383,8 +383,21 @@ def find_symmetries_with_spglib(
     # Handle magnetic materials
     # If magmom is provided, filter symmetries based on magnetic order
     if magmom is not None and len(magmom) > 0:
+        # Convert magmom to numpy array if it's a list
+        magmom_array = np.array(magmom) if not isinstance(magmom, np.ndarray) else magmom
+        
+        # Check dimensions and convert if needed
+        # If magmom is 1D (one value per atom), convert to Nx3 assuming z-component
+        if magmom_array.ndim == 1:
+            # Reshape to Nx3 with values in z-component
+            magmom_array = np.column_stack([
+                np.zeros(len(magmom_array)),
+                np.zeros(len(magmom_array)),
+                magmom_array
+            ])
+        
         # Check if there are any non-zero magnetic moments
-        has_magnetism = np.any(np.linalg.norm(magmom, axis=1) > 1e-6)
+        has_magnetism = np.any(np.linalg.norm(magmom_array, axis=1) > 1e-6)
         
         if has_magnetism:
             # Apply magnetic symmetry filtering
@@ -395,7 +408,7 @@ def find_symmetries_with_spglib(
                 lattice,
                 atom_positions,
                 atom_numbers.tolist(),
-                magmom,
+                magmom_array,
                 symm_magnetic_tolerance
             )
             nsymm = len(rotations)
