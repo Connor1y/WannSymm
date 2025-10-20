@@ -223,8 +223,9 @@ def rotate_single_hamiltonian(
     """
     Apply a single symmetry operation to rotate a Hamiltonian.
     
-    This is a placeholder implementation. The full rotate_ham function
-    from src/rotate_ham.c needs to be translated.
+    This is a SIMPLIFIED implementation that handles R-vector rotation
+    but uses identity for orbital rotations. For full correctness, this
+    needs the complete orbital transformation logic from src/rotate_ham.c.
     
     Parameters
     ----------
@@ -252,22 +253,66 @@ def rotate_single_hamiltonian(
         
     Notes
     -----
-    This function needs full implementation from C code.
-    For now, it returns a copy of the input as a placeholder.
-    """
-    logger.warning(
-        "rotate_single_hamiltonian is a placeholder. "
-        "Full implementation needed from src/rotate_ham.c"
-    )
+    This is a simplified version that:
+    1. Correctly rotates R-vectors: R' = S·R
+    2. Uses identity for orbital rotations (approximation)
     
-    # Placeholder: just return a copy of input
-    # TODO: Implement full rotation logic
+    For full implementation, need to add:
+    - Orbital rotation matrices from rotate_orbital.py
+    - Spinor rotations from rotate_spinor.py  
+    - Basis transformations from rotate_basis.py
+    - Hamiltonian matrix transformation: H'(R') = U† H(R) U
+    """
     from .wanndata import init_wanndata
-    ham_out = init_wanndata(ham_in.norb, ham_in.nrpt)
-    ham_out.rvec = [Vector(rv.x, rv.y, rv.z) for rv in ham_in.rvec]
+    from .vector import vector_rotate, Vector, find_vector
+    
+    norb = ham_in.norb
+    
+    # Create output Hamiltonian with same R-vectors (will be replaced)
+    ham_out = init_wanndata(norb, ham_in.nrpt)
+    
+    # Rotate R-vectors: R' = S·R
+    # R-vectors are in fractional (crystal) coordinates, rotation is in Cartesian
+    # Need to apply rotation properly accounting for lattice
+    
+    # Actually, checking the C code (src/rotate_ham.c line 228):
+    # rvec_in_roted = vector_rotate(rvec_in, rotation);
+    # It rotates directly with the rotation matrix.
+    # The rotation matrix from spglib is in fractional coordinates.
+    
+    # Rotate each R-vector
+    ham_out.rvec = []
+    for i, rvec in enumerate(ham_in.rvec):
+        # Rotate: R' = S·R (S is the symmetry rotation matrix)
+        rvec_rotated = vector_rotate(rvec, rotation)
+        # Round to nearest integer (R-vectors must be integer lattice vectors)
+        rvec_rotated = Vector(
+            round(rvec_rotated.x),
+            round(rvec_rotated.y),
+            round(rvec_rotated.z)
+        )
+        ham_out.rvec.append(rvec_rotated)
+    
+    # Copy weights (will be recalculated during averaging)
     ham_out.weight = ham_in.weight.copy()
+    
+    # SIMPLIFIED: Copy Hamiltonian without orbital transformation
+    # This is the APPROXIMATION - for correct results need full orbital rotation
     ham_out.ham = ham_in.ham.copy()
     ham_out.hamflag = ham_in.hamflag.copy()
+    
+    # TODO: Full implementation should:
+    # 1. Get orbital rotation matrices for each orbital pair
+    #    from rotate_orbital.get_rotation_matrix()
+    # 2. If SOC: Get spinor rotation from rotate_spinor.rotate_spinor()
+    # 3. Transform Hamiltonian: H'[i,j] = U_i† H[i,j] U_j
+    # 4. Handle phase factors from fractional translations
+    
+    if index_of_sym == 0:
+        logger.info(
+            "rotate_single_hamiltonian: Using simplified R-vector rotation. "
+            "Orbital transformations not yet implemented."
+        )
     
     return ham_out
 
