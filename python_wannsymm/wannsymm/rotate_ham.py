@@ -429,8 +429,6 @@ def rotate_ham(
         site_invsed.append(site)
     
     # Collect all R-vectors for output Hamiltonian
-    from .vector import vector_add, vector_sub
-    
     rvec_set = set()
     # Start with input R-vectors
     for rv in hin.rvec:
@@ -552,10 +550,10 @@ def rotate_ham(
                         for mr2 in range(1, 2*l2+2):
                             # Find input orbital index
                             iorb_in = find_index_of_wannorb(
-                                orb_info, norb, site_in1, r1, l1, mr1, ms1
+                                orb_info, site_in1, r1, l1, mr1, ms1
                             )
                             jorb_in = find_index_of_wannorb(
-                                orb_info, norb, site_in2, r2, l2, mr2, ms2
+                                orb_info, site_in2, r2, l2, mr2, ms2
                             )
                             
                             if iorb_in < 0 or jorb_in < 0:
