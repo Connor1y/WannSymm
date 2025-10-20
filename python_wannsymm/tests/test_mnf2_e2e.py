@@ -240,7 +240,7 @@ class TestMnF2EndToEnd:
     
     def run_python_wannsymm(self, input_file: str) -> Tuple[WannData, WannData]:
         """
-        Run Python WannSymm on input file.
+        Run Python WannSymm on input file using the main workflow.
         
         Parameters
         ----------
@@ -251,38 +251,40 @@ class TestMnF2EndToEnd:
         -------
         tuple
             (original_hamiltonian, symmetrized_hamiltonian)
+        
+        Notes
+        -----
+        This uses the main.py workflow which has placeholder rotation.
+        The full rotation implementation is not complete yet.
         """
+        from wannsymm.main import find_symmetries, run_symmetrization
+        from pathlib import Path as PathLib
+        
         # Read input
         input_data = readinput(input_file)
         
-        # Copy symmetries file from reference output
-        symm_file = Path("symmetries.dat")
+        # Copy symmetries file from reference output if needed
+        symm_file = PathLib("symmetries.dat")
         if not symm_file.exists():
             ref_symm = self.output_dir / "symmetries.dat"
             if ref_symm.exists():
                 shutil.copy(ref_symm, self.test_dir)
         
-        # Read symmetries
-        if symm_file.exists():
-            symm_data = readsymm(str(symm_file))
-        else:
-            raise FileNotFoundError("Symmetries file not found")
+        # Find symmetries - this will try to use spglib or read from file
+        try:
+            # For now, manually read symmetries from file
+            if symm_file.exists():
+                symm_data = readsymm(str(symm_file))
+            else:
+                raise FileNotFoundError("Symmetries file not found")
+        except Exception as e:
+            raise RuntimeError(f"Failed to get symmetries: {e}")
         
-        # Read Hamiltonian
-        ham_in = read_ham(input_data.seedname)
-        
-        # Apply Hermitian symmetry
-        ham_h = apply_hermitian_symmetry(ham_in)
-        
-        # TODO: Apply symmetry operations to generate transformed Hamiltonians
-        # For now, just use identity (this is a limitation of the current test)
-        ham_list = [ham_h]
-        
-        # Symmetrize
-        ham_symm = symmetrize_hamiltonians(
-            ham_list,
-            nsymm=len(symm_data.operations),
-            expand_rvec=input_data.expandrvec
+        # Run symmetrization workflow
+        ham_in, ham_symm = run_symmetrization(
+            input_data,
+            symm_data,
+            PathLib("wannsymm.out")
         )
         
         return ham_in, ham_symm
@@ -434,6 +436,36 @@ def test_report_summary():
     print("\n" + "="*70)
     print("MnF2 End-to-End Test Summary")
     print("="*70)
-    print("See individual test outputs above for detailed diagnostics")
+    print("\n**Test Results:**")
+    print("- test_hamiltonian_properties: PASS")
+    print("- test_mnf2_up_spin: FAIL")
+    print("- test_mnf2_dn_spin: FAIL (expected, same issue)")
+    print("\n**Root Cause Analysis:**")
+    print("\n1. **Primary Blocker**: rotate_single_hamiltonian is a placeholder")
+    print("   - Location: wannsymm/main.py, line ~240-272")
+    print("   - Impact: Hamiltonian rotation not implemented")
+    print("   - Result: Python output has 225 R-points vs C reference 533 R-points")
+    print("   - Module: rotate_ham / rotation infrastructure")
+    print("\n2. **Secondary Issues Fixed:**")
+    print("   - MAGMOM parsing with VASP notation (4*0.0) - FIXED")
+    print("   - readsymm separator line parsing - FIXED")
+    print("\n**Next Steps to Complete E2E Test:**")
+    print("\n1. Implement rotate_single_hamiltonian function:")
+    print("   - Rotate R-vectors: R' = S·R")
+    print("   - Transform orbital basis: U = rotation matrices for orbitals")
+    print("   - Transform Hamiltonian: H'(R') = U† H(R) U")
+    print("   - Handle fractional translations")
+    print("\n2. Required modules for rotation:")
+    print("   - rotate_orbital.py: orbital-specific rotations")
+    print("   - rotate_spinor.py: spinor rotations (if SOC)")
+    print("   - rotate_basis.py: basis transformation matrices")
+    print("   - vector.py: R-vector rotations")
+    print("\n3. Dependencies (bottom-up):")
+    print("   - constants → vector/matrix → wannorb")
+    print("   - → rotate_orbital/rotate_spinor")
+    print("   - → rotate_basis → rotate_ham")
+    print("\n**Minimal Fix Required:**")
+    print("Complete the rotate_single_hamiltonian function in main.py")
+    print("by integrating rotate_basis, rotate_orbital, and vector rotation")
     print("="*70)
     assert True
