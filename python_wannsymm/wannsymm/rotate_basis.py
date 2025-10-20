@@ -14,10 +14,166 @@ import numpy.typing as npt
 
 from .rotate_orbital import rotate_cubic
 from .rotate_spinor import rotate_spinor
+from .matrix import matrix3x3_inverse, matrix3x3_dot, matrix3x3_transpose
 
 # Type aliases
 ComplexMatrix = npt.NDArray[np.complex128]
 RealVector = npt.NDArray[np.float64]
+
+
+def get_axis_angle_of_rotation(
+    rotation: npt.NDArray[np.float64],
+    lattice: npt.NDArray[np.float64],
+    eps: float = 1e-7
+) -> Tuple[npt.NDArray[np.float64], float, int]:
+    """
+    Extract rotation axis, angle, and inversion flag from a rotation matrix.
+    
+    Converts a rotation matrix in fractional coordinates to axis-angle form
+    in Cartesian coordinates, with special handling for improper rotations.
+    
+    Equivalent to C function: void get_axis_angle_of_rotation(double axis[3], 
+                                   double * angle, int * inv, double rin[3][3], 
+                                   double lattice[3][3])
+    
+    Parameters
+    ----------
+    rotation : np.ndarray
+        3x3 rotation matrix in fractional coordinates
+    lattice : np.ndarray
+        3x3 lattice matrix (row vectors)
+    eps : float, optional
+        Tolerance for numerical comparisons (default: 1e-7)
+        
+    Returns
+    -------
+    axis : np.ndarray
+        Rotation axis as a unit vector (3,)
+    angle : float
+        Rotation angle in radians
+    inv : int
+        Inversion flag (1 if improper rotation, 0 if proper)
+        
+    Notes
+    -----
+    The function:
+    1. Converts rotation from fractional to Cartesian coordinates
+    2. Extracts determinant to check for improper rotations (det = -1)
+    3. Computes axis and angle using the trace and off-diagonal elements
+    4. Normalizes the axis to unit length
+    
+    For improper rotations (mirrors, rotoreflections), the determinant is -1.
+    The function returns the rotation part after removing the inversion.
+    """
+    # Convert lattice to column-major and get inverse
+    lattice_T = lattice.T  # Column-major
+    inv_lattice = matrix3x3_inverse(lattice_T)
+    
+    # Transform rotation to Cartesian: R_cart = A * R * A^-1
+    tmp = matrix3x3_dot(lattice_T, rotation)
+    rotation_cartesian = matrix3x3_dot(tmp, inv_lattice)
+    
+    # Compute determinant
+    determinant = np.linalg.det(rotation_cartesian)
+    
+    # Check for inversion
+    inv_flag = 1 if determinant < 0 else 0
+    
+    # Make it a proper rotation by multiplying by sign(det)
+    sign_det = 1.0 if determinant >= 0 else -1.0
+    rot = rotation_cartesian * sign_det
+    
+    # Determine type of rotation
+    trace = np.trace(rot)
+    
+    # Check for identity
+    is_identity = (
+        abs(rot[0, 0] - 1.0) < eps and
+        abs(rot[1, 1] - 1.0) < eps and
+        abs(rot[2, 2] - 1.0) < eps and
+        abs(rot[0, 1]) < eps and abs(rot[1, 2]) < eps and abs(rot[0, 2]) < eps and
+        abs(rot[1, 0]) < eps and abs(rot[2, 1]) < eps and abs(rot[2, 0]) < eps
+    )
+    
+    if is_identity:
+        # Identity rotation
+        return np.array([0.0, 0.0, 1.0]), 0.0, inv_flag
+    
+    # Check for 180 degree rotation (eigenvalue -1)
+    det1 = (
+        (rot[0, 0] + 1.0) * ((rot[1, 1] + 1.0) * (rot[2, 2] + 1.0) - rot[2, 1] * rot[1, 2]) -
+        rot[0, 1] * (rot[1, 0] * (rot[2, 2] + 1.0) - rot[2, 0] * rot[1, 2]) +
+        rot[0, 2] * (rot[1, 0] * rot[2, 1] - rot[2, 0] * (rot[1, 1] + 1.0))
+    )
+    
+    if abs(det1) < eps:
+        # 180 degree rotation
+        angle = np.pi
+        
+        # First try to find axis parallel to coordinate axis
+        axis = np.zeros(3)
+        for i in range(3):
+            if abs(rot[i, i] - 1.0) < eps:
+                axis[i] = 1.0
+        
+        norm = np.linalg.norm(axis)
+        if norm < eps:
+            # General case for 180 rotation
+            for i in range(3):
+                axis[i] = np.sqrt(abs(rot[i, i] + 1.0) / 2.0)
+            
+            # Use off-diagonal elements to determine signs
+            for i in range(3):
+                for j in range(i + 1, 3):
+                    if abs(axis[i] * axis[j]) > eps:
+                        axis[i] = 0.5 * rot[i, j] / axis[j]
+    else:
+        # General rotation (not 0 or 180 degrees)
+        # Extract axis from antisymmetric part
+        axis = np.array([
+            rot[2, 1] - rot[1, 2],
+            rot[0, 2] - rot[2, 0],
+            rot[1, 0] - rot[0, 1]
+        ])
+        
+        norm = np.linalg.norm(axis)
+        if norm > eps:
+            axis = axis / norm
+        else:
+            axis = np.array([0.0, 0.0, 1.0])
+        
+        # Compute angle from trace: trace = 1 + 2*cos(angle)
+        angle = np.arccos((trace - 1.0) / 2.0)
+        
+        # Determine sign of angle using off-diagonal elements
+        # Check consistency with rotation formula
+        test_value = axis[1] * axis[0] * (1 - np.cos(angle)) + axis[2] * np.sin(angle)
+        if abs(test_value - rot[1, 0]) > 1e-3:
+            angle = -angle
+    
+    # Normalize axis direction (prefer positive z, x, or y)
+    if axis[2] < -eps:
+        axis = -axis
+        angle = -angle
+    elif abs(axis[2]) < eps and axis[0] < -eps:
+        axis = -axis
+        angle = -angle
+    elif abs(axis[2]) < eps and abs(axis[0]) < eps and axis[1] < -eps:
+        axis = -axis
+        angle = -angle
+    
+    # Final normalization
+    norm = np.linalg.norm(axis)
+    if norm > eps:
+        axis = axis / norm
+    else:
+        axis = np.array([0.0, 0.0, 1.0])
+    
+    # Adjust angle to be in range (-π, π]
+    if angle < -np.pi + 1e-3:
+        angle += 2 * np.pi
+    
+    return axis, angle, inv_flag
 
 
 def combine_basis_rotation(
