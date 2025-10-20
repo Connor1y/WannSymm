@@ -386,10 +386,12 @@ def find_symmetries_with_spglib(
         # Convert magmom to numpy array if it's a list
         magmom_array = np.array(magmom) if not isinstance(magmom, np.ndarray) else magmom
         
-        # Check dimensions and convert if needed
-        # If magmom is 1D (one value per atom), convert to Nx3 assuming z-component
+        # Ensure magmom is 2D array (Nx3)
+        # If already processed by apply_saxis_transformation, it should be Nx3
+        # If not (e.g., test code passing 2D directly), accept it as-is
         if magmom_array.ndim == 1:
-            # Reshape to Nx3 with values in z-component
+            # Fallback: if still 1D, assume z-component
+            # (This shouldn't happen if apply_saxis_transformation was called)
             magmom_array = np.column_stack([
                 np.zeros(len(magmom_array)),
                 np.zeros(len(magmom_array)),

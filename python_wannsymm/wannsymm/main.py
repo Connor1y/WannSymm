@@ -199,13 +199,26 @@ def find_symmetries(
                 "Please provide structure in input file or use 'symm_from_file' option."
             )
         
+        # Process magmom with SAXIS transformation if needed
+        processed_magmom = input_data.magmom
+        if input_data.magmom is not None:
+            from .readinput import apply_saxis_transformation
+            natom = sum(input_data.num_atoms_each)
+            flag_soc = 1 if input_data.spinors else 0
+            processed_magmom = apply_saxis_transformation(
+                input_data.magmom,
+                natom,
+                flag_soc,
+                input_data.saxis
+            )
+        
         try:
             symm_data = find_symmetries_with_spglib(
                 lattice=input_data.lattice,
                 atom_positions=input_data.atom_positions,
                 atom_types=input_data.atom_types,
                 num_atoms_each=input_data.num_atoms_each,
-                magmom=input_data.magmom,
+                magmom=processed_magmom,
                 symprec=1e-5,
                 output_file="symmetries.dat"
             )
