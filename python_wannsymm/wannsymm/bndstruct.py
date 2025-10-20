@@ -14,9 +14,8 @@ import numpy as np
 import numpy.typing as npt
 
 from .constants import PI, cmplx_i, eps6
-from .vector import Vector, dot_product, vector_rotate, kpt_equivalent
+from .vector import Vector, dot_product, vector_rotate
 from .wanndata import WannData
-from .wannorb import WannOrb
 from .matrix import matrix3x3_inverse
 
 # Type aliases
@@ -28,9 +27,9 @@ RealMatrix = npt.NDArray[np.float64]
 class SmallGroup:
     """
     Small group structure for k-point symmetry analysis.
-    
+
     Equivalent to C struct __smallgroup.
-    
+
     Attributes
     ----------
     order : int
@@ -39,16 +38,17 @@ class SmallGroup:
         Index of every group element in the full symmetry group.
         For single-valued group: range [0, nsymm-1]
         For double group: negative indices [-nsymm, -1] for additional elements
-    
+
     Examples
     --------
     >>> sgrp = SmallGroup(order=0, element=[])
     >>> sgrp.order
     0
     """
+
     order: int = 0
     element: List[int] = field(default_factory=list)
-    
+
     def __post_init__(self):
         """Initialize element list if needed."""
         if not self.element:
@@ -58,27 +58,26 @@ class SmallGroup:
 
 
 def diagonalize_hamiltonian(
-    hr: WannData,
-    kpt: Vector
+    hr: WannData, kpt: Vector
 ) -> Tuple[npt.NDArray[np.float64], Optional[ComplexMatrix]]:
     """
     Calculate eigenvalues and eigenvectors of k-space Hamiltonian.
-    
-    Equivalent to C function: void bnd_eig_hk(double * eig_hk, dcomplex * vr_hk, 
+
+    Equivalent to C function: void bnd_eig_hk(double * eig_hk, dcomplex * vr_hk,
                                               wanndata * hr, vector kpt)
-    
+
     This function:
     1. Calculates H(k) from H(R) via Fourier transform:
        H(k) = Σ_R exp(i k·R) H(R) / weight(R)
     2. Diagonalizes H(k) to get eigenvalues and eigenvectors
-    
+
     Parameters
     ----------
     hr : WannData
         Real-space Hamiltonian data structure
     kpt : Vector
         k-point in crystal coordinates
-    
+
     Returns
     -------
     eig_hk : np.ndarray
@@ -88,7 +87,7 @@ def diagonalize_hamiltonian(
         Right eigenvectors as columns, shape (norb, norb)
         vr_hk[:, i] is the eigenvector for eigenvalue eig_hk[i]
         In row-major convention: vr_hk[i, :] is the i-th eigenvector
-    
+
     Examples
     --------
     >>> from wannsymm.wanndata import WannData
@@ -103,46 +102,45 @@ def diagonalize_hamiltonian(
     (2,)
     """
     norb = hr.norb
-    
+
     # Initialize H(k) as zero matrix
     ham_k = np.zeros((norb, norb), dtype=np.complex128)
-    
+
     # Fourier transform: H(k) = Σ_R exp(i k·R) H(R) / weight(R)
     for irpt in range(hr.nrpt):
         # Phase factor: exp(i k·R)
         k_dot_R = dot_product(kpt, hr.rvec[irpt])
         coeff = np.exp(cmplx_i * 2 * PI * k_dot_R)
-        
+
         # Weight factor
         scal = coeff / hr.weight[irpt]
-        
+
         # Add contribution: ham_k += scal * hr.ham[irpt]
         ham_k += scal * hr.ham[irpt]
-    
+
     # Diagonalize H(k) using Hermitian eigenvalue solver
     # numpy.linalg.eigh returns eigenvalues in ascending order
     # and eigenvectors as columns
     eig_hk, vecs = np.linalg.eigh(ham_k)
-    
+
     # Convert eigenvectors to row-major format to match C convention
     # In C: vr_hk[i*norb + j] corresponds to eigenvector i, component j
     # After eigh: vecs[:, i] is eigenvector for eig_hk[i]
     # We want: vr_hk[i, j] = vecs[j, i]
     vr_hk = vecs.T.copy()
-    
+
     return eig_hk, vr_hk
 
 
 def identify_degeneracies(
-    eig_hk: npt.NDArray[np.float64],
-    degenerate_tolerance: float = eps6
+    eig_hk: npt.NDArray[np.float64], degenerate_tolerance: float = eps6
 ) -> npt.NDArray[np.int32]:
     """
     Determine degeneracy of each eigenstate.
-    
+
     For each eigenvalue, identifies how many consecutive eigenvalues
     are degenerate (within tolerance).
-    
+
     Parameters
     ----------
     eig_hk : np.ndarray
@@ -151,13 +149,13 @@ def identify_degeneracies(
     degenerate_tolerance : float, optional
         Energy difference threshold for considering states degenerate.
         Default is eps6 (1e-6)
-    
+
     Returns
     -------
     ndegen : np.ndarray
         Degeneracy count for each state, shape (norb,)
         ndegen[i] = number of degenerate states in this group
-        
+
     Examples
     --------
     >>> eig = np.array([1.0, 1.0, 1.0, 2.0, 3.0])
@@ -167,18 +165,18 @@ def identify_degeneracies(
     """
     norb = len(eig_hk)
     ndegen = np.zeros(norb, dtype=np.int32)
-    
+
     ndegentmp = 0
     for io in range(norb):
         ndegentmp += 1
-        
+
         # Check if this is the last orbital or if next energy is different
         if io == norb - 1 or abs(eig_hk[io] - eig_hk[io + 1]) > degenerate_tolerance:
             # Mark all states in this degenerate group
             for jo in range(ndegentmp):
                 ndegen[io - jo] = ndegentmp
             ndegentmp = 0
-    
+
     return ndegen
 
 
@@ -191,14 +189,14 @@ def _print_symmetry_stub(
     TR: int,
     flag_showtrans: int,
     flag_showmirror: int,
-    flag_soc: bool
+    flag_soc: bool,
 ) -> None:
     """
     Stub for print_symmetry function (to be implemented in readinput module).
-    
+
     For now, outputs basic symmetry information.
     """
-    with open(fnout, 'a') as f:
+    with open(fnout, "a") as f:
         f.write(f"  Symmetry element #{isymm_elem}, TR={TR}\n")
 
 
@@ -217,13 +215,13 @@ def write_band_characters(
     norb: int,
     flag_soc: bool = False,
     en_print_prec: int = 6,
-    bnd_print_len: int = 5
+    bnd_print_len: int = 5,
 ) -> None:
     """
     Write band characters to output file.
-    
+
     Equivalent to C function: void bnd_write_characters(...)
-    
+
     Parameters
     ----------
     fnout : str
@@ -259,19 +257,19 @@ def write_band_characters(
         Field width for band number printing
     """
     # Open file in append mode
-    with open(fnout, 'a') as f:
+    with open(fnout, "a") as f:
         # Output k-point
         f.write(f"kpt:{kpt.x:10.7f} {kpt.y:10.7f} {kpt.z:10.7f}\n")
-        
+
         # Output small group order
         f.write(f"SmallGroupOrder= {sgrp.order} , Related symmetries:\n")
-    
+
     # Output symmetries that keep kpt invariant
     for sgrpi in range(sgrp.order):
         isymm = sgrp.element[sgrpi]
         if isymm < 0:
             isymm = -isymm - 1
-        
+
         # Use stub function to write symmetry information
         _print_symmetry_stub(
             fnout,
@@ -282,37 +280,39 @@ def write_band_characters(
             TR[isymm],
             0,  # flag_showtrans
             -1,  # flag_showmirror
-            flag_soc
+            flag_soc,
         )
-    
+
     # Output characters for each band
-    with open(fnout, 'a') as f:
+    with open(fnout, "a") as f:
         io = 0
         while io < norb:
             # Format band range
             msg1 = f"{io+1:>{bnd_print_len}} - {io+ndegen[io]:<{bnd_print_len}}"
-            msg = (f"band No. {msg1}  energy ="
-                   f"{eig_hk[io]:>{en_print_prec+5}.{en_print_prec}f} eV  "
-                   f"ndegen = {ndegen[io]:>{bnd_print_len}}")
+            msg = (
+                f"band No. {msg1}  energy ="
+                f"{eig_hk[io]:>{en_print_prec+5}.{en_print_prec}f} eV  "
+                f"ndegen = {ndegen[io]:>{bnd_print_len}}"
+            )
             f.write(f"{msg}\n    ")
-            
+
             # Output characters for this degenerate group
             for sgrpi in range(sgrp.order):
                 cha = sym_chas[sgrpi][io]
-                
+
                 # Clean up -0.000 display
                 if cha.real < 0 and abs(cha.real) < eps6:
                     cha = complex(0, cha.imag)
                 if cha.imag < 0 and abs(cha.imag) < eps6:
                     cha = complex(cha.real, 0)
-                
+
                 f.write(f"{cha.real:6.3f}{cha.imag:+6.3f}i")
-                
+
                 if sgrpi % 4 == 3 or sgrpi == sgrp.order - 1:
                     f.write("\n    ")
                 else:
                     f.write(", ")
-            
+
             f.write("\n")
             io += ndegen[io]
 
@@ -332,13 +332,13 @@ def write_band_eigenvalues(
     norb: int,
     flag_soc: bool = False,
     en_print_prec: int = 6,
-    bnd_print_len: int = 5
+    bnd_print_len: int = 5,
 ) -> None:
     """
     Write band eigenvalues to output file.
-    
+
     Equivalent to C function: void bnd_write_eigenvalues(...)
-    
+
     Parameters
     ----------
     fnout : str
@@ -374,19 +374,19 @@ def write_band_eigenvalues(
         Field width for band number printing
     """
     # Open file in append mode
-    with open(fnout, 'a') as f:
+    with open(fnout, "a") as f:
         # Output k-point
         f.write(f"kpt:{kpt.x:10.7f} {kpt.y:10.7f} {kpt.z:10.7f}\n")
-        
+
         # Output small group order
         f.write(f"SmallGroupOrder= {sgrp.order} , Related symmetries:\n")
-    
+
     # Output symmetries that keep kpt invariant
     for sgrpi in range(sgrp.order):
         isymm = sgrp.element[sgrpi]
         if isymm < 0:
             isymm = -isymm - 1
-        
+
         _print_symmetry_stub(
             fnout,
             lattice,
@@ -396,41 +396,43 @@ def write_band_eigenvalues(
             TR[isymm],
             0,  # flag_showtrans
             -1,  # flag_showmirror
-            flag_soc
+            flag_soc,
         )
-    
+
     # Output eigenvalues for each band
-    with open(fnout, 'a') as f:
+    with open(fnout, "a") as f:
         io = 0
         while io < norb:
             for jo in range(ndegen[io]):
                 # Format band range
                 msg1 = f"{io+1:>{bnd_print_len}} - {io+ndegen[io]:<{bnd_print_len}}"
-                msg = (f"No.{jo+1:>{bnd_print_len}} of "
-                       f"{ndegen[io]:>{bnd_print_len}} degenerage band "
-                       f"(band No. {msg1}) energy ="
-                       f"{eig_hk[io]:>{en_print_prec+5}.{en_print_prec}f} eV ")
+                msg = (
+                    f"No.{jo+1:>{bnd_print_len}} of "
+                    f"{ndegen[io]:>{bnd_print_len}} degenerage band "
+                    f"(band No. {msg1}) energy ="
+                    f"{eig_hk[io]:>{en_print_prec+5}.{en_print_prec}f} eV "
+                )
                 f.write(f"{msg}\n    ")
-                
+
                 # Output eigenvalues for this state
                 for sgrpi in range(sgrp.order):
                     eig = sym_eigs[sgrpi][io + jo]
-                    
+
                     # Clean up -0.000 display
                     if eig.real < 0 and abs(eig.real) < eps6:
                         eig = complex(0, eig.imag)
                     if eig.imag < 0 and abs(eig.imag) < eps6:
                         eig = complex(eig.real, 0)
-                    
+
                     f.write(f"{eig.real:6.3f}{eig.imag:+6.3f}i")
-                    
+
                     if sgrpi % 4 == 3 or sgrpi == sgrp.order - 1:
                         f.write("\n    ")
                     else:
                         f.write(", ")
-                
+
                 f.write("\n")
-            
+
             io += ndegen[io]
 
 
@@ -441,15 +443,15 @@ def write_bands(
     nk_per_kpath: int,
     lattice: RealMatrix,
     kvecs: List[Vector],
-    ebands: npt.NDArray[np.float64]
+    ebands: npt.NDArray[np.float64],
 ) -> None:
     """
     Write band structure data to file.
-    
+
     Equivalent to C function: void bnd_write_bands(...)
-    
+
     Outputs band energies along k-path with cumulative path length.
-    
+
     Parameters
     ----------
     fbands : TextIO
@@ -469,14 +471,14 @@ def write_bands(
     """
     # Calculate reciprocal lattice
     rec_latt = matrix3x3_inverse(lattice)
-    
+
     # Write header
     fbands.write("#   k-path len        Energy\n")
-    
+
     # Write bands
     for io in range(norb):
         kpath_len = 0.0
-        
+
         for ikpt in range(nkpath * nk_per_kpath):
             # Calculate cumulative path length
             if ikpt % nk_per_kpath != 0:
@@ -484,13 +486,13 @@ def write_bands(
                 dk = kvecs[ikpt] - kvecs[ikpt - 1]
                 dk_cart = vector_rotate(dk, rec_latt)
                 kpath_len += 2 * PI * np.sqrt(dot_product(dk_cart, dk_cart))
-            
+
             # Write k-path length and energy
             fbands.write(f"{kpath_len:15.9f} {ebands[ikpt, io]:21.15f}\n")
-            
+
             # Add blank line between path segments
             if ikpt % nk_per_kpath == nk_per_kpath - 1:
                 fbands.write("\n")
-        
+
         # Add blank line between bands
         fbands.write("\n")
