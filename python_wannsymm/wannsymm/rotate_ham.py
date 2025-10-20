@@ -536,9 +536,10 @@ def rotate_ham(
                                     orb_factor_right = np.conj(orb_rot[l2][mr_j-1, mr2-1])
                                     s_factor_right = np.conj(s_rot[ms_j, ms2])
                                     
-                                    ham_element = hin.ham[irpt_in, jorb_in, iorb_in] / hin.weight[irpt_in]
+                                    # FIX: Python stores ham[irpt, iorb, jorb], not ham[irpt, jorb, iorb]
+                                    ham_element = hin.ham[irpt_in, iorb_in, jorb_in] / hin.weight[irpt_in]
                                     
-                                    hout.ham[irpt_out, jorb_out, iorb_out] += (
+                                    hout.ham[irpt_out, iorb_out, jorb_out] += (
                                         orb_factor_left * s_factor_left * 
                                         ham_element *
                                         s_factor_right * orb_factor_right
@@ -563,9 +564,10 @@ def rotate_ham(
                             orb_factor_left = orb_rot[l1][mr_i-1, mr1-1]
                             orb_factor_right = np.conj(orb_rot[l2][mr_j-1, mr2-1])
                             
-                            ham_element = hin.ham[irpt_in, jorb_in, iorb_in] / hin.weight[irpt_in]
+                            # FIX: Python stores ham[irpt, iorb, jorb], not ham[irpt, jorb, iorb]
+                            ham_element = hin.ham[irpt_in, iorb_in, jorb_in] / hin.weight[irpt_in]
                             
-                            hout.ham[irpt_out, jorb_out, iorb_out] += (
+                            hout.ham[irpt_out, iorb_out, jorb_out] += (
                                 orb_factor_left * ham_element * orb_factor_right
                             )
     
