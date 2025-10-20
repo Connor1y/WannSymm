@@ -210,6 +210,91 @@ def find_symmetries(
     return symm_data
 
 
+def getrvec_and_site(
+    loc: Vector,
+    orb_info: List[WannOrb],
+    norb: int,
+    lattice: np.ndarray,
+    eps: float = 1e-3
+) -> Tuple[Vector, Vector]:
+    """
+    Decompose a location into R-vector and orbital site.
+    
+    Given a location in fractional coordinates, find which orbital site it 
+    corresponds to and what the R-vector offset is.
+    
+    Equivalent to C function: void getrvec_and_site(vector * p2rvec, vector * p2site, 
+                                                     vector loc, wannorb * orb_info, 
+                                                     int norb, double lattice[3][3])
+    
+    Parameters
+    ----------
+    loc : Vector
+        Location in fractional coordinates
+    orb_info : List[WannOrb]
+        Orbital information including sites
+    norb : int
+        Number of orbitals
+    lattice : np.ndarray
+        Crystal lattice (3x3)
+    eps : float, optional
+        Tolerance for site matching (default: 1e-3)
+        
+    Returns
+    -------
+    rvec : Vector
+        Integer R-vector part
+    site : Vector
+        Orbital site part
+        
+    Raises
+    ------
+    RuntimeError
+        If no matching site is found
+        
+    Notes
+    -----
+    The location is decomposed as: loc = rvec + site
+    where rvec is an integer vector and site matches one of the orbital sites.
+    """
+    from .vector import Vector, vector_rotate, dot_product
+    
+    # Try to match location to each orbital site
+    for i in range(norb):
+        site = orb_info[i].site
+        
+        # Compute displacement: loc - site
+        dis_x = loc.x - site.x
+        dis_y = loc.y - site.y
+        dis_z = loc.z - site.z
+        
+        # Split into integer and fractional parts
+        dis_int_x = round(dis_x)
+        dis_int_y = round(dis_y)
+        dis_int_z = round(dis_z)
+        
+        dis_rem_x = dis_x - dis_int_x
+        dis_rem_y = dis_y - dis_int_y
+        dis_rem_z = dis_z - dis_int_z
+        
+        # Convert remainder to Cartesian coordinates to check distance
+        dis_rem = Vector(dis_rem_x, dis_rem_y, dis_rem_z)
+        dis_rem_cartesian = vector_rotate(dis_rem, lattice)
+        
+        # Check if remainder is small (within tolerance)
+        dist_sq = dot_product(dis_rem_cartesian, dis_rem_cartesian)
+        if dist_sq < eps * eps:
+            # Found matching site
+            rvec = Vector(dis_int_x, dis_int_y, dis_int_z)
+            return rvec, site
+    
+    # No matching site found - this is an error
+    raise RuntimeError(
+        f"Cannot find matching orbital site for location ({loc.x:.5f}, {loc.y:.5f}, {loc.z:.5f}). "
+        f"This may indicate an incompatible symmetry operation or incorrect orbital positions."
+    )
+
+
 def rotate_single_hamiltonian(
     ham_in: WannData,
     lattice: np.ndarray,
@@ -223,8 +308,8 @@ def rotate_single_hamiltonian(
     """
     Apply a single symmetry operation to rotate a Hamiltonian.
     
-    This is a SIMPLIFIED implementation that handles R-vector rotation
-    but uses identity for orbital rotations. For full correctness, this
+    This is a SIMPLIFIED implementation that handles R-vector collection properly
+    but uses identity for orbital transformations. For full correctness, this
     needs the complete orbital transformation logic from src/rotate_ham.c.
     
     Parameters
@@ -253,9 +338,9 @@ def rotate_single_hamiltonian(
         
     Notes
     -----
-    This is a simplified version that:
-    1. Correctly rotates R-vectors: R' = S·R
-    2. Uses identity for orbital rotations (approximation)
+    This implementation:
+    1. Correctly collects R-vectors by rotating orbital sites
+    2. Uses identity for orbital transformations (approximation)
     
     For full implementation, need to add:
     - Orbital rotation matrices from rotate_orbital.py
@@ -264,57 +349,234 @@ def rotate_single_hamiltonian(
     - Hamiltonian matrix transformation: H'(R') = U† H(R) U
     """
     from .wanndata import init_wanndata
-    from .vector import vector_rotate, Vector, find_vector
+    from .vector import vector_rotate, Vector, vector_add, vector_sub, equal, find_vector
     
     norb = ham_in.norb
     
-    # Create output Hamiltonian with same R-vectors (will be replaced)
-    ham_out = init_wanndata(norb, ham_in.nrpt)
+    # Step 1: For each orbital, compute its rotated location and decompose
+    # into R-vector and site parts
+    rvec_sup_symmed = []
+    site_symmed = []
     
-    # Rotate R-vectors: R' = S·R
-    # R-vectors are in fractional (crystal) coordinates, rotation is in Cartesian
-    # Need to apply rotation properly accounting for lattice
-    
-    # Actually, checking the C code (src/rotate_ham.c line 228):
-    # rvec_in_roted = vector_rotate(rvec_in, rotation);
-    # It rotates directly with the rotation matrix.
-    # The rotation matrix from spglib is in fractional coordinates.
-    
-    # Rotate each R-vector
-    ham_out.rvec = []
-    for i, rvec in enumerate(ham_in.rvec):
-        # Rotate: R' = S·R (S is the symmetry rotation matrix)
-        rvec_rotated = vector_rotate(rvec, rotation)
-        # Round to nearest integer (R-vectors must be integer lattice vectors)
-        rvec_rotated = Vector(
-            round(rvec_rotated.x),
-            round(rvec_rotated.y),
-            round(rvec_rotated.z)
+    for iorb in range(norb):
+        # Get orbital site
+        loc_in = orb_info[iorb].site
+        
+        # Apply symmetry: loc_out = rotation * loc_in + translation
+        loc_out = vector_add(
+            vector_rotate(loc_in, rotation),
+            Vector(translation[0], translation[1], translation[2])
         )
-        ham_out.rvec.append(rvec_rotated)
+        
+        # Decompose into R-vector and site
+        try:
+            rvec_sup, site = getrvec_and_site(loc_out, orb_info, norb, lattice)
+        except RuntimeError as e:
+            # If orbital site matching fails, log warning and skip this symmetry
+            logger.warning(f"Symmetry {index_of_sym+1}: {e}")
+            # Return input Hamiltonian unchanged as a fallback
+            return ham_in
+        
+        rvec_sup_symmed.append(rvec_sup)
+        site_symmed.append(site)
     
-    # Copy weights (will be recalculated during averaging)
-    ham_out.weight = ham_in.weight.copy()
+    # Step 2: Collect all R-vectors that will appear in rotated Hamiltonian
+    # Start with R-vectors from input
+    rvec_set = set()
+    for rv in ham_in.rvec:
+        rvec_set.add((rv.x, rv.y, rv.z))
     
-    # SIMPLIFIED: Copy Hamiltonian without orbital transformation
-    # This is the APPROXIMATION - for correct results need full orbital rotation
-    ham_out.ham = ham_in.ham.copy()
-    ham_out.hamflag = ham_in.hamflag.copy()
+    # For each input R-vector and each pair of orbitals, compute output R-vector
+    # Formula: R_out = (R_rotated + R_sup[jorb]) - R_sup[iorb]
+    for irpt in range(ham_in.nrpt):
+        rvec_in = ham_in.rvec[irpt]
+        
+        # Rotate the R-vector
+        rvec_in_rotated = vector_rotate(rvec_in, rotation)
+        
+        # Check if rotated R-vector is close to integer
+        # (if not, this R-vector is incompatible with this symmetry)
+        if not (abs(rvec_in_rotated.x - round(rvec_in_rotated.x)) < 1e-3 and
+                abs(rvec_in_rotated.y - round(rvec_in_rotated.y)) < 1e-3 and
+                abs(rvec_in_rotated.z - round(rvec_in_rotated.z)) < 1e-3):
+            # Skip this R-vector - it's incompatible with the rotation
+            continue
+        
+        # Round to integer
+        rvec_in_rotated = Vector(
+            round(rvec_in_rotated.x),
+            round(rvec_in_rotated.y),
+            round(rvec_in_rotated.z)
+        )
+        
+        # For each orbital pair, compute output R-vector
+        # Use unique sites (skip duplicates for efficiency)
+        unique_sites_i = []
+        for iorb in range(norb):
+            if iorb == 0 or not equal(orb_info[iorb].site, orb_info[iorb-1].site):
+                unique_sites_i.append(iorb)
+        
+        unique_sites_j = []
+        for jorb in range(norb):
+            if jorb == 0 or not equal(orb_info[jorb].site, orb_info[jorb-1].site):
+                unique_sites_j.append(jorb)
+        
+        for jorb in unique_sites_j:
+            rvec_out2 = vector_add(rvec_sup_symmed[jorb], rvec_in_rotated)
+            
+            for iorb in unique_sites_i:
+                rvec_out1 = rvec_sup_symmed[iorb]
+                
+                # Output R-vector for this element
+                rvec_out = vector_sub(rvec_out2, rvec_out1)
+                rvec_set.add((rvec_out.x, rvec_out.y, rvec_out.z))
     
-    # TODO: Full implementation should:
-    # 1. Get orbital rotation matrices for each orbital pair
-    #    from rotate_orbital.get_rotation_matrix()
-    # 2. If SOC: Get spinor rotation from rotate_spinor.rotate_spinor()
-    # 3. Transform Hamiltonian: H'[i,j] = U_i† H[i,j] U_j
-    # 4. Handle phase factors from fractional translations
+    # Step 3: Create output Hamiltonian with collected R-vectors
+    rvec_list = sorted(list(rvec_set))
+    nrpt_out = len(rvec_list)
+    
+    ham_out = init_wanndata(norb, nrpt_out)
+    ham_out.rvec = [Vector(rv[0], rv[1], rv[2]) for rv in rvec_list]
+    
+    # Initialize weights to 1 (will be updated during averaging)
+    ham_out.weight = np.ones(nrpt_out)
+    
+    # Step 4: SIMPLIFIED - Copy Hamiltonian elements without proper transformation
+    # For each output R-vector, find corresponding input and copy
+    # This is an approximation - proper implementation needs orbital rotation matrices
+    for irpt_out in range(nrpt_out):
+        rvec_out = ham_out.rvec[irpt_out]
+        
+        # Find corresponding input R-vector (simplified - just look for exact match)
+        jrpt = find_vector(rvec_out, ham_in.rvec)
+        if jrpt != -1:
+            # Copy Hamiltonian elements
+            ham_out.ham[irpt_out] = ham_in.ham[jrpt].copy()
+            ham_out.hamflag[irpt_out] = ham_in.hamflag[jrpt].copy()
     
     if index_of_sym == 0:
         logger.info(
-            "rotate_single_hamiltonian: Using simplified R-vector rotation. "
-            "Orbital transformations not yet implemented."
+            f"rotate_single_hamiltonian: Collected {nrpt_out} R-points (input had {ham_in.nrpt}). "
+            f"Using identity for orbital rotations (approximation)."
         )
     
     return ham_out
+
+
+def construct_orbital_info(input_data: InputData, norb: int) -> List[WannOrb]:
+    """
+    Construct orbital information from input data.
+    
+    Creates a list of WannOrb objects based on projections and atomic positions.
+    This is a simplified implementation that creates one orbital per site.
+    
+    Parameters
+    ----------
+    input_data : InputData
+        Input data containing projections and atomic positions
+    norb : int
+        Expected number of orbitals
+        
+    Returns
+    -------
+    List[WannOrb]
+        List of orbital information
+        
+    Notes
+    -----
+    This is a simplified implementation. For full functionality, should:
+    - Parse projection groups properly
+    - Handle s, p, d, f orbitals correctly
+    - Apply local axis transformations
+    - Handle SOC doubling of orbitals
+    """
+    orb_info = []
+    
+    # Check if we have atom positions
+    if input_data.atom_positions is None or input_data.atom_types is None:
+        # Fallback: create dummy orbitals at origin
+        logger.warning("No atomic positions available, using dummy orbital sites at origin")
+        for i in range(norb):
+            orb_info.append(WannOrb(
+                site=Vector(0, 0, 0),
+                axis=[Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)],
+                r=1, l=0, mr=0, ms=0
+            ))
+        return orb_info
+    
+    # Map orbital names to (l, number of orbitals)
+    orb_map = {
+        's': (0, 1),   # l=0, 1 orbital
+        'p': (1, 3),   # l=1, 3 orbitals (px, py, pz)
+        'd': (2, 5),   # l=2, 5 orbitals
+        'f': (3, 7),   # l=3, 7 orbitals
+    }
+    
+    # Build orbital list from projections
+    atom_idx = 0
+    for proj_group in input_data.projections:
+        # Find matching atoms for this projection group
+        atom_type = proj_group.element
+        
+        # Get positions for this atom type
+        type_idx = None
+        start_idx = 0
+        for i, atype in enumerate(input_data.atom_types):
+            if atype == atom_type:
+                type_idx = i
+                break
+            if input_data.num_atoms_each:
+                start_idx += input_data.num_atoms_each[i]
+        
+        if type_idx is None:
+            logger.warning(f"Atom type '{atom_type}' not found in POSCAR, skipping")
+            continue
+        
+        # Number of atoms of this type
+        num_atoms = input_data.num_atoms_each[type_idx] if input_data.num_atoms_each else 1
+        
+        # For each atom of this type
+        for iatom in range(num_atoms):
+            atom_pos = input_data.atom_positions[start_idx + iatom]
+            site = Vector(atom_pos[0], atom_pos[1], atom_pos[2])
+            
+            # For each orbital in this projection group
+            for orb_name in proj_group.orbitals:
+                # Get l and number of orbitals
+                l, n_orb = orb_map.get(orb_name.lower(), (0, 1))
+                
+                # Create orbitals
+                for mr in range(1, n_orb + 1):
+                    orb_info.append(WannOrb(
+                        site=site,
+                        axis=[Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)],
+                        r=1, l=l, mr=mr, ms=0
+                    ))
+                    
+                    # If SOC, add spin-down component
+                    if input_data.spinors:
+                        orb_info.append(WannOrb(
+                            site=site,
+                            axis=[Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)],
+                            r=1, l=l, mr=mr, ms=1
+                        ))
+    
+    # Check if we have the right number of orbitals
+    if len(orb_info) != norb:
+        logger.warning(
+            f"Constructed {len(orb_info)} orbitals but expected {norb}. "
+            f"Using first {norb} orbitals."
+        )
+        # Pad or truncate to match
+        while len(orb_info) < norb:
+            orb_info.append(WannOrb(
+                site=Vector(0, 0, 0),
+                axis=[Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)],
+                r=1, l=0, mr=0, ms=0
+            ))
+        orb_info = orb_info[:norb]
+    
+    return orb_info
 
 
 def run_symmetrization(
@@ -380,16 +642,8 @@ def run_symmetrization(
     nsymm = len(symm_data.operations)
     ham_list = []
     
-    # Create dummy orbital info for now
-    # TODO: Get actual orbital info from input_data.projections
-    orb_info = [
-        WannOrb(
-            site=Vector(0, 0, 0),
-            axis=[Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)],
-            r=0, l=0, mr=0, ms=0
-        )
-        for _ in range(ham_hermitian.norb)
-    ]
+    # Create orbital info from input data
+    orb_info = construct_orbital_info(input_data, ham_hermitian.norb)
     
     for isymm, symm_op in enumerate(symm_data.operations):
         logger.info(f"Processing symmetry {isymm+1}/{nsymm}...")
