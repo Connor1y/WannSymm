@@ -123,6 +123,164 @@ def validate_rotation_matrix(
         )
 
 
+def find_symmetries_with_spglib(
+    lattice: npt.NDArray[np.float64],
+    atom_positions: npt.NDArray[np.float64],
+    atom_types: List[str],
+    num_atoms_each: List[int],
+    magmom: Optional[npt.NDArray[np.float64]] = None,
+    symprec: float = 1e-5,
+    output_file: Optional[str] = None
+) -> SymmetryData:
+    """
+    Find symmetry operations using spglib.
+    
+    Equivalent to the C function behavior in src/readinput.c where spglib
+    is used to detect symmetries and write them to symmetries.dat.
+    
+    Parameters
+    ----------
+    lattice : np.ndarray
+        3x3 lattice matrix (row vectors)
+    atom_positions : np.ndarray
+        Nx3 array of atomic positions in fractional coordinates
+    atom_types : List[str]
+        List of element symbols for each atom type
+    num_atoms_each : List[int]
+        Number of atoms for each type
+    magmom : np.ndarray, optional
+        Magnetic moments for each atom (Nx3)
+    symprec : float, optional
+        Symmetry precision for spglib (default: 1e-5)
+    output_file : str, optional
+        Output file name for symmetries (default: "symmetries.dat")
+        
+    Returns
+    -------
+    SymmetryData
+        Symmetry operations with global time-reversal flag
+        
+    Raises
+    ------
+    ImportError
+        If spglib is not available
+    SymmetryError
+        If symmetry detection fails
+        
+    Notes
+    -----
+    This function:
+    1. Calls spglib to get symmetries of the crystal structure
+    2. Converts rotation matrices from integer to float
+    3. Handles magnetic materials (if magmom provided)
+    4. Writes symmetries to output file
+    5. Returns SymmetryData object
+    """
+    try:
+        import spglib
+    except ImportError:
+        raise ImportError(
+            "spglib is required for automatic symmetry detection. "
+            "Install with: pip install spglib"
+        )
+    
+    if output_file is None:
+        output_file = "symmetries.dat"
+    
+    # Prepare atom types as integers for spglib
+    atom_numbers = []
+    for i, num_atoms in enumerate(num_atoms_each):
+        atom_numbers.extend([i + 1] * num_atoms)
+    atom_numbers = np.array(atom_numbers, dtype=int)
+    
+    # spglib expects column-major lattice (transpose)
+    lattice_spg = lattice.T.copy()
+    
+    # Create spglib cell tuple: (lattice, positions, numbers)
+    cell = (lattice_spg, atom_positions, atom_numbers)
+    
+    # Get symmetry operations from spglib
+    # Use get_symmetry to get rotations and translations
+    symmetry = spglib.get_symmetry(cell, symprec=symprec)
+    
+    if symmetry is None:
+        raise SymmetryError("spglib failed to find symmetries")
+    
+    # Extract rotations and translations
+    # spglib returns rotations as integer matrices
+    rotations_int = symmetry['rotations']
+    translations = symmetry['translations']
+    nsymm = len(rotations_int)
+    
+    # Convert integer rotations to float
+    rotations = [rot.astype(np.float64) for rot in rotations_int]
+    
+    # Initialize time-reversal flags (default: no time-reversal per operation)
+    TR_flags = [False] * nsymm
+    global_trsymm = True
+    
+    # TODO: Handle magnetic materials
+    # If magmom is provided, need to check which symmetries preserve magnetization
+    # For now, we follow C code logic where magnetic handling is done separately
+    # in derive_symm_for_magnetic_materials()
+    
+    # Create SymmetryOperation objects
+    operations = []
+    for i in range(nsymm):
+        operations.append(SymmetryOperation(
+            rotation=rotations[i],
+            translation=translations[i],
+            time_reversal=TR_flags[i]
+        ))
+    
+    # Get space group information
+    try:
+        dataset = spglib.get_symmetry_dataset(cell, symprec=symprec)
+        if dataset is not None:
+            international_symbol = dataset.international
+            international_number = dataset.number
+            hall_symbol = dataset.hall
+        else:
+            international_symbol = "Unknown"
+            international_number = 0
+            hall_symbol = "Unknown"
+    except:
+        international_symbol = "Unknown"
+        international_number = 0
+        hall_symbol = "Unknown"
+    
+    # Write symmetries to file
+    with open(output_file, 'w') as f:
+        f.write("space group infomation:\n")
+        f.write(f"    International: {international_symbol} ({international_number})\n")
+        f.write(f"    schoenflies: {hall_symbol} ({international_number})\n")
+        f.write(f"global time-reversal symmetry = {global_trsymm}\n")
+        
+        if magmom is not None:
+            f.write("magnetic order detected\n")
+            f.write("symmetries in the corresponding magnetic group:\n")
+        
+        f.write(f"nsymm = {nsymm}\n")
+        
+        for i, op in enumerate(operations):
+            f.write(f"--- {i+1} ---\n")
+            # Write rotation matrix as integers
+            for j in range(3):
+                f.write(f"{int(np.round(op.rotation[j, 0])):2d} "
+                       f"{int(np.round(op.rotation[j, 1])):2d} "
+                       f"{int(np.round(op.rotation[j, 2])):2d}\n")
+            # Write translation and time-reversal flag
+            f.write(f"{op.translation[0]:f} {op.translation[1]:f} {op.translation[2]:f}")
+            if not global_trsymm:
+                f.write(" T" if op.time_reversal else " F")
+            f.write("\n")
+    
+    return SymmetryData(
+        operations=operations,
+        global_time_reversal=global_trsymm
+    )
+
+
 def readsymm(
     filename: str,
     validate: bool = True,

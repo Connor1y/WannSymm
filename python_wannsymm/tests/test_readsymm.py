@@ -567,3 +567,135 @@ nsymm = 1
             assert np.allclose(symm_data.operations[0].translation, [0.5, 0.0, 0.0])
         finally:
             os.unlink(fname)
+
+
+class TestFindSymmetriesWithSpglib:
+    """Test find_symmetries_with_spglib function."""
+    
+    def test_simple_cubic_structure(self):
+        """Test symmetry detection for simple cubic structure."""
+        try:
+            from wannsymm.readsymm import find_symmetries_with_spglib
+        except ImportError:
+            pytest.skip("spglib not available")
+        
+        # Simple cubic lattice
+        lattice = np.eye(3) * 4.0
+        atom_positions = np.array([[0.0, 0.0, 0.0]])
+        atom_types = ['Fe']
+        num_atoms_each = [1]
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.dat') as f:
+            output_file = f.name
+        
+        try:
+            symm_data = find_symmetries_with_spglib(
+                lattice=lattice,
+                atom_positions=atom_positions,
+                atom_types=atom_types,
+                num_atoms_each=num_atoms_each,
+                output_file=output_file
+            )
+            
+            # Simple cubic should have 48 symmetries (Oh point group)
+            assert len(symm_data.operations) == 48
+            assert symm_data.global_time_reversal is True
+            
+            # Verify output file was created and contains expected content
+            assert os.path.exists(output_file)
+            with open(output_file, 'r') as f:
+                content = f.read()
+                assert 'nsymm = 48' in content
+                assert 'space group infomation:' in content
+                assert 'global time-reversal symmetry = True' in content
+        finally:
+            if os.path.exists(output_file):
+                os.unlink(output_file)
+    
+    def test_fcc_structure(self):
+        """Test symmetry detection for FCC structure."""
+        try:
+            from wannsymm.readsymm import find_symmetries_with_spglib
+        except ImportError:
+            pytest.skip("spglib not available")
+        
+        # FCC lattice (primitive cell)
+        lattice = np.array([
+            [0.0, 0.5, 0.5],
+            [0.5, 0.0, 0.5],
+            [0.5, 0.5, 0.0]
+        ]) * 4.0
+        
+        atom_positions = np.array([[0.0, 0.0, 0.0]])
+        atom_types = ['Cu']
+        num_atoms_each = [1]
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.dat') as f:
+            output_file = f.name
+        
+        try:
+            symm_data = find_symmetries_with_spglib(
+                lattice=lattice,
+                atom_positions=atom_positions,
+                atom_types=atom_types,
+                num_atoms_each=num_atoms_each,
+                output_file=output_file
+            )
+            
+            # FCC primitive cell should have 48 symmetries
+            assert len(symm_data.operations) == 48
+            
+            # Verify rotation matrices are integer with det = ±1
+            # Note: spglib returns rotations in fractional coordinates
+            # These are not orthogonal in Cartesian space, but preserve the lattice
+            for op in symm_data.operations:
+                det = np.linalg.det(op.rotation)
+                assert np.isclose(abs(det), 1.0), f"Rotation determinant should be ±1, got {det}"
+        finally:
+            if os.path.exists(output_file):
+                os.unlink(output_file)
+    
+    def test_output_file_format(self):
+        """Test that output file has correct format matching C version."""
+        try:
+            from wannsymm.readsymm import find_symmetries_with_spglib
+        except ImportError:
+            pytest.skip("spglib not available")
+        
+        # Simple structure for testing
+        lattice = np.eye(3) * 5.0
+        atom_positions = np.array([[0.0, 0.0, 0.0], [0.5, 0.5, 0.5]])
+        atom_types = ['Na', 'Cl']
+        num_atoms_each = [1, 1]
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.dat') as f:
+            output_file = f.name
+        
+        try:
+            symm_data = find_symmetries_with_spglib(
+                lattice=lattice,
+                atom_positions=atom_positions,
+                atom_types=atom_types,
+                num_atoms_each=num_atoms_each,
+                output_file=output_file
+            )
+            
+            # Read the output file back and verify it can be parsed
+            symm_data_read = readsymm(output_file)
+            
+            # Should have same number of operations
+            assert len(symm_data_read.operations) == len(symm_data.operations)
+            
+            # Verify rotations and translations match
+            for i in range(len(symm_data.operations)):
+                assert np.allclose(
+                    symm_data_read.operations[i].rotation,
+                    symm_data.operations[i].rotation
+                )
+                assert np.allclose(
+                    symm_data_read.operations[i].translation,
+                    symm_data.operations[i].translation
+                )
+        finally:
+            if os.path.exists(output_file):
+                os.unlink(output_file)
