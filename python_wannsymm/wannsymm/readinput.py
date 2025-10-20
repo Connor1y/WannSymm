@@ -129,9 +129,9 @@ class InputData:
     
     # Symmetry options
     global_trsymm: bool = True
-    expandrvec: bool = False
+    expandrvec: bool = True  # C default is True (flag_expandrvec=1)
     everysymm: bool = False
-    hermitian: bool = False
+    hermitian: bool = True  # C default is True (flag_hermitian=1)
     symm_from_file: bool = False
     symm_input_file: str = ""
     
