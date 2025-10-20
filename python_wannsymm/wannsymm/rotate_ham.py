@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .constants import eps4, eps5, eps8
-from .vector import Vector, equal, find_vector, vector_scale, vector_rotate, dot_product
+from .vector import Vector, equal, find_vector, vector_scale, vector_rotate, dot_product, vector_add, vector_sub
 from .matrix import matrix3x3_inverse, matrix3x3_dot, matrix3x3_transpose
 from .wanndata import WannData, init_wanndata
 from .wannorb import WannOrb
@@ -223,6 +223,351 @@ def trsymm_ham(hin: WannData, orb_info: List[WannOrb], flag_soc: int) -> WannDat
                                     tr_factor[ms_j * 2 + ms2] *
                                     np.conj(hin.ham[irpt, jorb_in, iorb_in])
                                 )
+    
+    return hout
+
+
+def getrvec_and_site(
+    loc: Vector,
+    orb_info: List[WannOrb],
+    norb: int,
+    lattice: npt.NDArray[np.float64],
+    eps: float = 1e-3
+) -> Tuple[Vector, Vector]:
+    """
+    Decompose a location into R-vector and orbital site.
+    
+    Given a location in fractional coordinates, find which orbital site it 
+    corresponds to and what the R-vector offset is.
+    
+    Equivalent to C function: void getrvec_and_site(vector * p2rvec, vector * p2site, 
+                                                     vector loc, wannorb * orb_info, 
+                                                     int norb, double lattice[3][3])
+    
+    Parameters
+    ----------
+    loc : Vector
+        Location in fractional coordinates
+    orb_info : List[WannOrb]
+        Orbital information including sites
+    norb : int
+        Number of orbitals
+    lattice : np.ndarray
+        Crystal lattice (3x3)
+    eps : float, optional
+        Tolerance for site matching (default: 1e-3)
+        
+    Returns
+    -------
+    rvec : Vector
+        Integer R-vector part
+    site : Vector
+        Orbital site part
+        
+    Raises
+    ------
+    RuntimeError
+        If no matching site is found
+        
+    Notes
+    -----
+    The location is decomposed as: loc = rvec + site
+    where rvec is an integer vector and site matches one of the orbital sites.
+    """
+    # Try to match location to each orbital site
+    for i in range(norb):
+        site = orb_info[i].site
+        
+        # Compute displacement: loc - site
+        dis_x = loc.x - site.x
+        dis_y = loc.y - site.y
+        dis_z = loc.z - site.z
+        
+        # Split into integer and fractional parts
+        dis_int_x = round(dis_x)
+        dis_int_y = round(dis_y)
+        dis_int_z = round(dis_z)
+        
+        dis_rem_x = dis_x - dis_int_x
+        dis_rem_y = dis_y - dis_int_y
+        dis_rem_z = dis_z - dis_int_z
+        
+        # Convert remainder to Cartesian coordinates to check distance
+        dis_rem = Vector(dis_rem_x, dis_rem_y, dis_rem_z)
+        dis_rem_cartesian = vector_rotate(dis_rem, lattice)
+        
+        # Check if remainder is small (within tolerance)
+        dist_sq = dot_product(dis_rem_cartesian, dis_rem_cartesian)
+        if dist_sq < eps * eps:
+            # Found matching site
+            rvec = Vector(dis_int_x, dis_int_y, dis_int_z)
+            return rvec, site
+    
+    # No matching site found - this is an error
+    raise RuntimeError(
+        f"Cannot find matching orbital site for location ({loc.x:.5f}, {loc.y:.5f}, {loc.z:.5f}). "
+        f"This may indicate an incompatible symmetry operation or incorrect orbital positions."
+    )
+
+
+def rotate_ham(
+    hin: WannData,
+    lattice: npt.NDArray[np.float64],
+    rotation: npt.NDArray[np.float64],
+    translation: npt.NDArray[np.float64],
+    orb_info: List[WannOrb],
+    flag_soc: int,
+    flag_local_axis: int = 0,
+    index_of_sym: int = 0
+) -> WannData:
+    """
+    Apply a symmetry operation to rotate a Hamiltonian.
+    
+    Transforms the Hamiltonian under a symmetry operation:
+    H'(R', i', j') = D†(i→i') S† H(R, i, j) S D(j→j')
+    
+    where D are orbital rotation matrices and S is the spinor rotation matrix.
+    
+    Equivalent to C function: void rotate_ham(wanndata * hout, wanndata * hin, ...)
+    
+    Parameters
+    ----------
+    hin : WannData
+        Input Hamiltonian
+    lattice : np.ndarray
+        Crystal lattice (3x3)
+    rotation : np.ndarray
+        Rotation matrix (3x3)
+    translation : np.ndarray
+        Translation vector (3,)
+    orb_info : List[WannOrb]
+        Orbital information
+    flag_soc : int
+        SOC flag (0=no SOC, 1=with SOC)
+    flag_local_axis : int, optional
+        Local axis flag (default: 0)
+    index_of_sym : int, optional
+        Index of symmetry operation for logging (default: 0)
+        
+    Returns
+    -------
+    hout : WannData
+        Rotated Hamiltonian
+        
+    Notes
+    -----
+    This is the core symmetrization function. It:
+    1. Computes where each orbital goes under the symmetry operation
+    2. Collects all R-vectors needed in the output
+    3. For each output matrix element, finds which input elements contribute
+    4. Applies orbital and spinor rotation matrices to transform the Hamiltonian
+    
+    The transformation preserves the physical properties of the system while
+    expressing them in the rotated basis.
+    """
+    from .rotate_orbital import rotate_cubic
+    from .rotate_spinor import rotate_spinor
+    from .wanndata import find_index_of_ham
+    from .wannorb import find_index_of_wannorb
+    
+    norb = hin.norb
+    
+    # Get inverse symmetry operation
+    inv_rotation, inv_translation = inverse_symm(rotation, translation)
+    
+    # Get rotation axis and angle for spinor and orbital rotations
+    # We need to convert the rotation matrix to axis-angle form
+    # For now, use simplified approach: extract from rotation matrix
+    from .rotate_basis import get_axis_angle_of_rotation
+    
+    rot_axis, rot_angle, inv_flag = get_axis_angle_of_rotation(rotation, lattice)
+    
+    # Get spinor rotation matrix
+    s_rot = rotate_spinor(rot_axis, rot_angle, inv_flag)
+    
+    # Get orbital rotation matrices for each l
+    MAX_L = 3  # Maximum angular momentum
+    orb_rot = {}
+    for l in range(MAX_L + 1):
+        orb_rot[l] = rotate_cubic(l, rot_axis, rot_angle, bool(inv_flag))
+    
+    # Create lookup tables for rotated orbital positions
+    # site_symmed: site of orbital after symmetry operation
+    # rvec_sup_symmed: extra R-vector from symmetry operation
+    site_symmed = []
+    rvec_sup_symmed = []
+    site_invsed = []
+    rvec_sup_invsed = []
+    
+    for iorb in range(norb):
+        # Skip duplicate sites
+        if iorb > 0 and equal(orb_info[iorb].site, orb_info[iorb-1].site):
+            rvec_sup_symmed.append(rvec_sup_symmed[iorb-1])
+            rvec_sup_invsed.append(rvec_sup_invsed[iorb-1])
+            site_symmed.append(site_symmed[iorb-1])
+            site_invsed.append(site_invsed[iorb-1])
+            continue
+        
+        loc_in = orb_info[iorb].site
+        
+        # Apply symmetry operation
+        loc_out = vector_add(
+            vector_rotate(loc_in, rotation),
+            Vector(translation[0], translation[1], translation[2])
+        )
+        rvec_sup, site = getrvec_and_site(loc_out, orb_info, norb, lattice)
+        rvec_sup_symmed.append(rvec_sup)
+        site_symmed.append(site)
+        
+        # Apply inverse symmetry operation
+        loc_out = vector_add(
+            vector_rotate(loc_in, inv_rotation),
+            Vector(inv_translation[0], inv_translation[1], inv_translation[2])
+        )
+        rvec_sup, site = getrvec_and_site(loc_out, orb_info, norb, lattice)
+        rvec_sup_invsed.append(rvec_sup)
+        site_invsed.append(site)
+    
+    # Collect all R-vectors for output Hamiltonian
+    rvec_set = set()
+    # Start with input R-vectors
+    for rv in hin.rvec:
+        rvec_set.add((int(rv.x), int(rv.y), int(rv.z)))
+    
+    # Add R-vectors from rotated positions
+    for irpt in range(hin.nrpt):
+        rvec_in = hin.rvec[irpt]
+        rvec_in_rotated = vector_rotate(rvec_in, rotation)
+        
+        # Check if rotated R-vector is close to integer
+        if not (abs(rvec_in_rotated.x - round(rvec_in_rotated.x)) < 1e-3 and
+                abs(rvec_in_rotated.y - round(rvec_in_rotated.y)) < 1e-3 and
+                abs(rvec_in_rotated.z - round(rvec_in_rotated.z)) < 1e-3):
+            # Skip incompatible R-vector
+            rvec_set.discard((int(rvec_in.x), int(rvec_in.y), int(rvec_in.z)))
+            continue
+        
+        rvec_in_rotated = Vector(
+            round(rvec_in_rotated.x),
+            round(rvec_in_rotated.y),
+            round(rvec_in_rotated.z)
+        )
+        
+        # For each orbital pair, compute output R-vector
+        for jorb in range(norb):
+            if jorb > 0 and equal(orb_info[jorb].site, orb_info[jorb-1].site):
+                continue
+            rvec_out2 = vector_add(rvec_sup_symmed[jorb], rvec_in_rotated)
+            
+            for iorb in range(norb):
+                if iorb > 0 and equal(orb_info[iorb].site, orb_info[iorb-1].site):
+                    continue
+                rvec_out1 = rvec_sup_symmed[iorb]
+                
+                rvec_out = vector_sub(rvec_out2, rvec_out1)
+                rvec_set.add((int(rvec_out.x), int(rvec_out.y), int(rvec_out.z)))
+    
+    # Create output Hamiltonian
+    rvec_list = sorted(list(rvec_set))
+    nrvec = len(rvec_list)
+    
+    hout = init_wanndata(norb, nrvec)
+    hout.rvec = [Vector(rv[0], rv[1], rv[2]) for rv in rvec_list]
+    hout.weight = np.ones(nrvec)
+    
+    # Transform Hamiltonian matrix elements
+    for irpt_out in range(nrvec):
+        rvec_out = hout.rvec[irpt_out]
+        rvec_out_invsed = vector_rotate(rvec_out, inv_rotation)
+        
+        for jorb_out in range(norb):
+            site_out2 = orb_info[jorb_out].site
+            site_in2 = site_invsed[jorb_out]
+            rvec_in2 = vector_add(rvec_sup_invsed[jorb_out], rvec_out_invsed)
+            
+            # Round to integers
+            rvec_in2 = Vector(round(rvec_in2.x), round(rvec_in2.y), round(rvec_in2.z))
+            
+            r2 = orb_info[jorb_out].r
+            l2 = orb_info[jorb_out].l
+            mr_j = orb_info[jorb_out].mr
+            ms_j = orb_info[jorb_out].ms
+            
+            for iorb_out in range(norb):
+                site_out1 = orb_info[iorb_out].site
+                site_in1 = site_invsed[iorb_out]
+                rvec_in1 = rvec_sup_invsed[iorb_out]
+                
+                r1 = orb_info[iorb_out].r
+                l1 = orb_info[iorb_out].l
+                mr_i = orb_info[iorb_out].mr
+                ms_i = orb_info[iorb_out].ms
+                
+                rvec_in = vector_sub(rvec_in2, rvec_in1)
+                irpt_in = find_vector(rvec_in, hin.rvec)
+                if irpt_in == -1:
+                    continue
+                
+                ii_out = irpt_out * norb * norb + jorb_out * norb + iorb_out
+                hout.hamflag.flat[ii_out] = 1
+                
+                # Apply orbital and spinor rotations
+                if flag_soc == 1:
+                    # With SOC: transform both orbital and spin
+                    for mr1 in range(1, 2*l1+2):
+                        for mr2 in range(1, 2*l2+2):
+                            for ms1 in range(2):
+                                for ms2 in range(2):
+                                    # Find input orbital index
+                                    iorb_in = find_index_of_wannorb(
+                                        orb_info, norb, site_in1, r1, l1, mr1, ms1
+                                    )
+                                    jorb_in = find_index_of_wannorb(
+                                        orb_info, norb, site_in2, r2, l2, mr2, ms2
+                                    )
+                                    
+                                    if iorb_in < 0 or jorb_in < 0:
+                                        continue
+                                    
+                                    # Apply transformation: D† S† H S D
+                                    # H'(i',j') = D†_i,i1 S†_ms_i,ms1 H(i1,j1) S_ms_j,ms2 D_j,j1
+                                    orb_factor_left = orb_rot[l1][mr_i-1, mr1-1]
+                                    s_factor_left = s_rot[ms_i, ms1]
+                                    orb_factor_right = np.conj(orb_rot[l2][mr_j-1, mr2-1])
+                                    s_factor_right = np.conj(s_rot[ms_j, ms2])
+                                    
+                                    ham_element = hin.ham[irpt_in, jorb_in, iorb_in] / hin.weight[irpt_in]
+                                    
+                                    hout.ham[irpt_out, jorb_out, iorb_out] += (
+                                        orb_factor_left * s_factor_left * 
+                                        ham_element *
+                                        s_factor_right * orb_factor_right
+                                    )
+                else:
+                    # Without SOC: only orbital rotation
+                    ms1 = ms2 = 0
+                    for mr1 in range(1, 2*l1+2):
+                        for mr2 in range(1, 2*l2+2):
+                            # Find input orbital index
+                            iorb_in = find_index_of_wannorb(
+                                orb_info, site_in1, r1, l1, mr1, ms1
+                            )
+                            jorb_in = find_index_of_wannorb(
+                                orb_info, site_in2, r2, l2, mr2, ms2
+                            )
+                            
+                            if iorb_in < 0 or jorb_in < 0:
+                                continue
+                            
+                            # Apply transformation: D† H D
+                            orb_factor_left = orb_rot[l1][mr_i-1, mr1-1]
+                            orb_factor_right = np.conj(orb_rot[l2][mr_j-1, mr2-1])
+                            
+                            ham_element = hin.ham[irpt_in, jorb_in, iorb_in] / hin.weight[irpt_in]
+                            
+                            hout.ham[irpt_out, jorb_out, iorb_out] += (
+                                orb_factor_left * ham_element * orb_factor_right
+                            )
     
     return hout
 
