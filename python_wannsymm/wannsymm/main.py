@@ -17,7 +17,7 @@ from typing import Optional, List, Tuple
 import numpy as np
 
 from .readinput import readinput, InputData, InputParseError
-from .readsymm import readsymm, SymmetryData, SymmetryError
+from .readsymm import readsymm, find_symmetries_with_spglib, SymmetryData, SymmetryError
 from .wanndata import read_ham, write_ham, WannData
 from .wannorb import WannOrb
 from .rotate_ham import (
@@ -183,20 +183,33 @@ def find_symmetries(
     else:
         # Use spglib to find symmetries
         logger.info("Using spglib to find symmetries...")
-        try:
-            import spglib
-        except ImportError:
+        
+        # Check that required structure data is available
+        if input_data.lattice is None or input_data.atom_positions is None:
             raise WannSymmError(
-                "spglib is required for automatic symmetry detection. "
-                "Install with: pip install spglib"
+                "Crystal structure information (lattice and atom positions) "
+                "is required for automatic symmetry detection. "
+                "Please provide structure in input file or use 'symm_from_file' option."
             )
         
-        # TODO: Implement spglib symmetry finding
-        # For now, raise an error indicating this needs implementation
-        raise WannSymmError(
-            "Automatic symmetry detection with spglib is not yet implemented. "
-            "Please provide a symmetry file using 'symm_from_file' option."
-        )
+        if input_data.atom_types is None or input_data.num_atoms_each is None:
+            raise WannSymmError(
+                "Atom type information is required for automatic symmetry detection. "
+                "Please provide structure in input file or use 'symm_from_file' option."
+            )
+        
+        try:
+            symm_data = find_symmetries_with_spglib(
+                lattice=input_data.lattice,
+                atom_positions=input_data.atom_positions,
+                atom_types=input_data.atom_types,
+                num_atoms_each=input_data.num_atoms_each,
+                magmom=input_data.magmom,
+                symprec=1e-5,
+                output_file="symmetries.dat"
+            )
+        except (ImportError, SymmetryError) as e:
+            raise WannSymmError(f"Failed to find symmetries with spglib: {e}")
     
     logger.info(f"Found {len(symm_data.operations)} symmetry operations")
     logger.info(f"Global time-reversal symmetry: {symm_data.global_time_reversal}")
