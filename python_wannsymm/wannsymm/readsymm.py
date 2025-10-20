@@ -123,6 +123,166 @@ def validate_rotation_matrix(
         )
 
 
+def derive_symm_for_magnetic_materials(
+    rotations: List[npt.NDArray[np.float64]],
+    translations: List[npt.NDArray[np.float64]],
+    lattice: npt.NDArray[np.float64],
+    atom_positions: npt.NDArray[np.float64],
+    atom_types: List[int],
+    magmom: npt.NDArray[np.float64],
+    symm_magnetic_tolerance: float = 1e-3
+) -> Tuple[List[npt.NDArray[np.float64]], List[npt.NDArray[np.float64]], List[bool]]:
+    """
+    Derive symmetries for magnetic materials.
+    
+    This function filters crystal symmetries based on how they transform magnetic moments.
+    Only symmetries that preserve the magnetic order (possibly with time-reversal) are kept.
+    
+    Equivalent to C function: void derive_symm_for_magnetic_materials(...)
+    in src/readinput.c
+    
+    Parameters
+    ----------
+    rotations : List[np.ndarray]
+        List of 3x3 rotation matrices (fractional coordinates)
+    translations : List[np.ndarray]
+        List of 3-element translation vectors (fractional coordinates)
+    lattice : np.ndarray
+        3x3 lattice matrix (row vectors in Cartesian coordinates)
+    atom_positions : np.ndarray
+        Nx3 array of atomic positions (fractional coordinates)
+    atom_types : List[int]
+        List of atom type indices for each atom
+    magmom : np.ndarray
+        Nx3 array of magnetic moments (Cartesian coordinates)
+    symm_magnetic_tolerance : float
+        Tolerance for comparing magnetic moments
+        
+    Returns
+    -------
+    filtered_rotations : List[np.ndarray]
+        Filtered rotation matrices
+    filtered_translations : List[np.ndarray]
+        Filtered translation vectors
+    TR_flags : List[bool]
+        Time-reversal flags for each filtered symmetry
+        
+    Notes
+    -----
+    For each symmetry operation S=(R,t):
+    1. Transform each atom: r' = R·r + t
+    2. Transform each magnetic moment: m' = R_cart·m (with sign flip for inversion)
+    3. If m'_transformed ≈ m_final for all atoms: keep symmetry with TR=False
+    4. If m'_transformed ≈ -m_final for all atoms: keep symmetry with TR=True
+    5. Otherwise: discard symmetry
+    """
+    from .vector import Vector, vector_norm, vector_sub, vector_round
+    
+    natom = len(atom_positions)
+    nsymm_crystal = len(rotations)
+    
+    # Convert lattice for transformations
+    # latt_trans = transpose(lattice) for fractional->Cartesian
+    latt_trans = lattice.T  
+    latt_trans_inv = np.linalg.inv(latt_trans)
+    
+    # Store filtered symmetries
+    filtered_rotations = []
+    filtered_translations = []
+    TR_flags = []
+    
+    # Check each symmetry operation
+    for isymm in range(nsymm_crystal):
+        rot = rotations[isymm]
+        trans = translations[isymm]
+        
+        # Compute Cartesian rotation: R_cart = latt_trans · R · latt_trans^-1
+        rot_cart = latt_trans @ rot @ latt_trans_inv
+        
+        keep_symm_vote = 0
+        tr_vote = 0
+        tot_votes = 0
+        
+        # Check each magnetic atom
+        for iatom in range(natom):
+            # Skip atoms with zero magnetic moment (no vote)
+            mag_norm = np.linalg.norm(magmom[iatom])
+            if mag_norm < abs(symm_magnetic_tolerance):
+                continue
+            
+            tot_votes += 1
+            
+            # Transform atomic position: r' = R·r + t
+            atpos_symmed = rot @ atom_positions[iatom] + trans
+            
+            # Transform magnetic moment: m' = R_cart·m
+            mag_roted = rot_cart @ magmom[iatom]
+            
+            # If inversion (det(R) < 0), flip sign of rotated moment
+            # Inversion doesn't affect spin space
+            if matrix3x3_determinant(rot) < 0:
+                mag_roted = -mag_roted
+            
+            # Find which atom the transformed position corresponds to
+            jatom = None
+            for j in range(natom):
+                # Distance in fractional coordinates
+                dis = atpos_symmed - atom_positions[j]
+                # Get integer part (lattice translation)
+                dis_int = np.round(dis)
+                # Get fractional remainder
+                dis_rem = dis - dis_int
+                # Convert to Cartesian for distance check
+                dis_rem_cart = lattice.T @ dis_rem
+                dis_norm = np.linalg.norm(dis_rem_cart)
+                
+                if dis_norm < 1e-3:
+                    jatom = j
+                    break
+            
+            if jatom is None:
+                # Could not find transformed atom - this shouldn't happen
+                # for valid symmetries, so skip this symmetry
+                break
+                
+            # Check if atom types match
+            if atom_types[iatom] != atom_types[jatom]:
+                # Atom types don't match - invalid symmetry
+                break
+            
+            # Check if magnetic moments match (with or without time-reversal)
+            mag_diff_direct = np.linalg.norm(magmom[jatom] - mag_roted)
+            mag_diff_reversed = np.linalg.norm(magmom[jatom] + mag_roted)
+            
+            if mag_diff_direct < abs(symm_magnetic_tolerance):
+                # Magnetic moment preserved: S·m_i = m_j
+                keep_symm_vote += 1
+            elif mag_diff_reversed < abs(symm_magnetic_tolerance):
+                # Magnetic moment flipped: S·m_i = -m_j (time-reversal)
+                tr_vote += 1
+        
+        # Decide whether to keep this symmetry
+        if tot_votes == 0:
+            # No magnetic atoms found - keep all symmetries
+            # (This is the non-magnetic case)
+            filtered_rotations.append(rot)
+            filtered_translations.append(trans)
+            TR_flags.append(False)
+        elif keep_symm_vote == tot_votes:
+            # All magnetic moments preserved - keep without time-reversal
+            filtered_rotations.append(rot)
+            filtered_translations.append(trans)
+            TR_flags.append(False)
+        elif tr_vote == tot_votes:
+            # All magnetic moments flipped - keep with time-reversal
+            filtered_rotations.append(rot)
+            filtered_translations.append(trans)
+            TR_flags.append(True)
+        # Otherwise: mixed behavior - discard this symmetry
+    
+    return filtered_rotations, filtered_translations, TR_flags
+
+
 def find_symmetries_with_spglib(
     lattice: npt.NDArray[np.float64],
     atom_positions: npt.NDArray[np.float64],
@@ -214,22 +374,42 @@ def find_symmetries_with_spglib(
     
     # Convert integer rotations to float
     rotations = [rot.astype(np.float64) for rot in rotations_int]
+    translations_list = [trans.copy() for trans in translations]
     
     # Initialize time-reversal flags (default: no time-reversal per operation)
     TR_flags = [False] * nsymm
     global_trsymm = True
     
-    # TODO: Handle magnetic materials
-    # If magmom is provided, need to check which symmetries preserve magnetization
-    # For now, we follow C code logic where magnetic handling is done separately
-    # in derive_symm_for_magnetic_materials()
+    # Handle magnetic materials
+    # If magmom is provided, filter symmetries based on magnetic order
+    if magmom is not None and len(magmom) > 0:
+        # Check if there are any non-zero magnetic moments
+        has_magnetism = np.any(np.linalg.norm(magmom, axis=1) > 1e-6)
+        
+        if has_magnetism:
+            # Apply magnetic symmetry filtering
+            symm_magnetic_tolerance = 1e-3  # Default tolerance, could be parameter
+            rotations, translations_list, TR_flags = derive_symm_for_magnetic_materials(
+                rotations,
+                translations_list,
+                lattice,
+                atom_positions,
+                atom_numbers.tolist(),
+                magmom,
+                symm_magnetic_tolerance
+            )
+            nsymm = len(rotations)
+            
+            # If any symmetry has time-reversal, disable global time-reversal
+            if any(TR_flags):
+                global_trsymm = False
     
     # Create SymmetryOperation objects
     operations = []
     for i in range(nsymm):
         operations.append(SymmetryOperation(
             rotation=rotations[i],
-            translation=translations[i],
+            translation=translations_list[i],
             time_reversal=TR_flags[i]
         ))
     
