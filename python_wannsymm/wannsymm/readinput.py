@@ -17,6 +17,50 @@ from pathlib import Path
 from .vector import Vector
 
 
+def expand_vasp_notation(value_str: str) -> List[float]:
+    """
+    Expand VASP-style notation like "4*0.0" or "2*1.0 3*2.0".
+    
+    Parameters
+    ----------
+    value_str : str
+        String with VASP notation (e.g., "4*0.0" or "1.0 2.0 3*0.0")
+    
+    Returns
+    -------
+    list
+        Expanded list of floats
+    
+    Examples
+    --------
+    >>> expand_vasp_notation("4*0.0")
+    [0.0, 0.0, 0.0, 0.0]
+    >>> expand_vasp_notation("1.0 2*3.0")
+    [1.0, 3.0, 3.0]
+    """
+    result = []
+    parts = value_str.split()
+    
+    for part in parts:
+        if '*' in part:
+            # Parse N*value notation
+            count_str, value_str = part.split('*', 1)
+            try:
+                count = int(count_str)
+                value = float(value_str)
+                result.extend([value] * count)
+            except ValueError:
+                raise ValueError(f"Invalid notation: {part}")
+        else:
+            # Simple float value
+            try:
+                result.append(float(part))
+            except ValueError:
+                raise ValueError(f"Invalid float: {part}")
+    
+    return result
+
+
 class InputParseError(Exception):
     """Exception raised when parsing input file fails."""
     
@@ -938,8 +982,8 @@ def readinput(filename: str) -> InputData:
             # Parse magnetism
             elif tag == 'magmom':
                 if arg.upper() != 'NULL':
-                    # Parse magmom string (simplified for now)
-                    data.magmom = [float(x) for x in arg.split()]
+                    # Parse magmom string with support for VASP notation (e.g., "4*0.0")
+                    data.magmom = expand_vasp_notation(arg)
             
             elif tag == 'saxis':
                 parts = arg.split()

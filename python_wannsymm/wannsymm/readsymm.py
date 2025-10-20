@@ -227,6 +227,18 @@ def readsymm(
                 f"Unexpected end of file while reading symmetry {i+1}/{nsymm}"
             )
         
+        # Skip separator lines like "--- N ---"
+        while line_idx < len(lines):
+            line = lines[line_idx].strip()
+            if line and not line.startswith('---'):
+                break
+            line_idx += 1
+        
+        if line_idx >= len(lines):
+            raise InputParseError(
+                f"Unexpected end of file while reading symmetry {i+1}/{nsymm}"
+            )
+        
         # Check for optional 'angle' tag (not fully supported yet)
         line = lines[line_idx]
         tag, arg = parseline(line, ignorecase=True)
