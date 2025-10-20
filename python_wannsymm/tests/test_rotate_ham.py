@@ -402,3 +402,83 @@ class TestIntegration:
         # Result should be real and symmetric
         H = wann_h.ham[0]
         assert np.allclose(H.imag, 0, atol=1e-10)
+
+
+class TestDifferentAngularMomentum:
+    """Test that Hamiltonian elements are zero for different angular momentum"""
+    
+    def test_rotate_ham_different_l_no_soc(self):
+        """Test that H(l1, l2) = 0 when l1 != l2 (without SOC)"""
+        from wannsymm.rotate_ham import rotate_ham
+        
+        # Create Hamiltonian with 4 orbitals: 2 s-orbitals (l=0) and 2 p-orbitals (l=1)
+        wann = init_wanndata(4, 1)
+        wann.rvec = [Vector(0, 0, 0)]
+        wann.weight = np.ones(1)
+        
+        # Set non-zero values everywhere initially
+        wann.ham[0] = np.ones((4, 4), dtype=np.complex128)
+        
+        # Create orbital info: 2 s-orbitals and 2 p-orbitals at same site
+        site = Vector(0, 0, 0)
+        axis = [Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)]
+        orb_info = [
+            WannOrb(site=site, axis=axis, r=0, l=0, mr=1, ms=0),  # s-orbital 1
+            WannOrb(site=site, axis=axis, r=1, l=0, mr=1, ms=0),  # s-orbital 2
+            WannOrb(site=site, axis=axis, r=2, l=1, mr=1, ms=0),  # p-orbital 1
+            WannOrb(site=site, axis=axis, r=3, l=1, mr=2, ms=0),  # p-orbital 2
+        ]
+        
+        # Apply identity rotation
+        lattice = np.eye(3)
+        rotation = np.eye(3)
+        translation = np.zeros(3)
+        
+        hout = rotate_ham(wann, lattice, rotation, translation, orb_info, flag_soc=0)
+        
+        # Check that s-p and p-s couplings are zero
+        # Orbitals 0,1 are s (l=0), orbitals 2,3 are p (l=1)
+        for i in range(2):  # s-orbitals
+            for j in range(2, 4):  # p-orbitals
+                assert np.abs(hout.ham[0, i, j]) < 1e-10, \
+                    f"H({i},{j}) should be zero for l={orb_info[i].l} to l={orb_info[j].l}"
+                assert np.abs(hout.ham[0, j, i]) < 1e-10, \
+                    f"H({j},{i}) should be zero for l={orb_info[j].l} to l={orb_info[i].l}"
+    
+    def test_rotate_ham_different_l_with_soc(self):
+        """Test that H(l1, l2) = 0 when l1 != l2 (with SOC)"""
+        from wannsymm.rotate_ham import rotate_ham
+        
+        # Create Hamiltonian with 4 orbitals: 2 s-orbitals (l=0, 2 spins) and 2 p-orbitals (l=1, 2 spins)
+        wann = init_wanndata(4, 1)
+        wann.rvec = [Vector(0, 0, 0)]
+        wann.weight = np.ones(1)
+        
+        # Set non-zero values everywhere initially
+        wann.ham[0] = np.ones((4, 4), dtype=np.complex128)
+        
+        # Create orbital info with SOC
+        site = Vector(0, 0, 0)
+        axis = [Vector(1, 0, 0), Vector(0, 1, 0), Vector(0, 0, 1)]
+        orb_info = [
+            WannOrb(site=site, axis=axis, r=0, l=0, mr=1, ms=0),  # s-orbital, spin up
+            WannOrb(site=site, axis=axis, r=0, l=0, mr=1, ms=1),  # s-orbital, spin down
+            WannOrb(site=site, axis=axis, r=1, l=1, mr=1, ms=0),  # p-orbital, spin up
+            WannOrb(site=site, axis=axis, r=1, l=1, mr=1, ms=1),  # p-orbital, spin down
+        ]
+        
+        # Apply identity rotation
+        lattice = np.eye(3)
+        rotation = np.eye(3)
+        translation = np.zeros(3)
+        
+        hout = rotate_ham(wann, lattice, rotation, translation, orb_info, flag_soc=1)
+        
+        # Check that s-p and p-s couplings are zero (regardless of spin)
+        # Orbitals 0,1 are s (l=0), orbitals 2,3 are p (l=1)
+        for i in range(2):  # s-orbitals
+            for j in range(2, 4):  # p-orbitals
+                assert np.abs(hout.ham[0, i, j]) < 1e-10, \
+                    f"H({i},{j}) should be zero for l={orb_info[i].l} to l={orb_info[j].l}"
+                assert np.abs(hout.ham[0, j, i]) < 1e-10, \
+                    f"H({j},{i}) should be zero for l={orb_info[j].l} to l={orb_info[i].l}"

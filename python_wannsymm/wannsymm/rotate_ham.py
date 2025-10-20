@@ -503,6 +503,11 @@ def rotate_ham(
                 mr_i = orb_info[iorb_out].mr
                 ms_i = orb_info[iorb_out].ms
                 
+                # Skip if orbitals have different angular momentum
+                # Hamiltonian elements between different l are zero by symmetry
+                if l1 != l2:
+                    continue
+                
                 rvec_in = vector_sub(rvec_in2, rvec_in1)
                 irpt_in = find_vector(rvec_in, hin.rvec)
                 if irpt_in == -1:
@@ -520,10 +525,10 @@ def rotate_ham(
                                 for ms2 in range(2):
                                     # Find input orbital index
                                     iorb_in = find_index_of_wannorb(
-                                        orb_info, norb, site_in1, r1, l1, mr1, ms1
+                                        orb_info, site_in1, r1, l1, mr1, ms1
                                     )
                                     jorb_in = find_index_of_wannorb(
-                                        orb_info, norb, site_in2, r2, l2, mr2, ms2
+                                        orb_info, site_in2, r2, l2, mr2, ms2
                                     )
                                     
                                     if iorb_in < 0 or jorb_in < 0:
