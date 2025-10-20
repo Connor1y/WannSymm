@@ -68,3 +68,8 @@ make.sys
 
 README.pdf
 README.html
+
+# Test executables (don't exclude test source files)
+tests/test_matrix
+tests/test_vector
+tests/test_usefulio
