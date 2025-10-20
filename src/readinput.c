@@ -1313,7 +1313,7 @@ void derive_magmom_from_array(vector * magmom, double * magmom_array,int natom, 
             maxis.z=magmom_array[3*ii+2];
         }
         magmom[ii].x = cos(beta)*cos(alpha)*maxis.x - sin(alpha)*maxis.y + sin(beta)*cos(alpha)*maxis.z;
-        magmom[ii].y = cos(beta)*sin(alpha)*maxis.x + cos(alpha)*maxis.y + sin(beta)*cos(alpha)*maxis.z;
+        magmom[ii].y = cos(beta)*sin(alpha)*maxis.x + cos(alpha)*maxis.y + sin(beta)*sin(alpha)*maxis.z;
         magmom[ii].z =           -sin(beta)*maxis.x                      +            cos(beta)*maxis.z;
     }
 }

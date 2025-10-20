@@ -61,6 +61,88 @@ def expand_vasp_notation(value_str: str) -> List[float]:
     return result
 
 
+def apply_saxis_transformation(
+    magmom_array: List[float],
+    natom: int,
+    flag_soc: int,
+    saxis: Tuple[float, float, float] = (0.0, 0.0, 1.0)
+) -> npt.NDArray[np.float64]:
+    """
+    Apply SAXIS transformation to convert magmom to Cartesian coordinates.
+    
+    Equivalent to C function: void derive_magmom_from_array(...)
+    in src/readinput.c lines 1283-1319.
+    
+    Parameters
+    ----------
+    magmom_array : List[float]
+        Magnetic moment values. For non-SOC: one value per atom.
+        For SOC: three values (x,y,z) per atom.
+    natom : int
+        Number of atoms
+    flag_soc : int
+        SOC flag: 0 for non-SOC, 1 for SOC
+    saxis : Tuple[float, float, float]
+        Spin quantization axis (default: (0.0, 0.0, 1.0))
+        
+    Returns
+    -------
+    np.ndarray
+        Nx3 array of magnetic moments in Cartesian coordinates
+        
+    Notes
+    -----
+    This function implements the correct rotation matrix formula.
+    The C code had a bug on line 1316 (sin(beta)*cos(alpha) instead of
+    sin(beta)*sin(alpha)) which has been fixed in both C and Python.
+    """
+    # Calculate angles from SAXIS
+    # alpha: azimuthal angle in xy-plane
+    # beta: polar angle from z-axis
+    if abs(saxis[0]) < 1e-10:
+        if abs(saxis[1]) < 1e-10:
+            alpha = 0.0
+        else:
+            alpha = np.pi / 2.0
+    else:
+        alpha = np.arctan(saxis[1] / saxis[0])
+    
+    if abs(saxis[2]) < 1e-10:
+        beta = np.pi / 2.0
+    else:
+        beta = np.arctan(np.sqrt(saxis[0]**2 + saxis[1]**2) / saxis[2])
+    
+    # Initialize output array
+    magmom = np.zeros((natom, 3), dtype=np.float64)
+    
+    # Transform each atom's magnetic moment
+    for ii in range(natom):
+        if flag_soc == 0:
+            # Non-SOC: single value per atom (z-component in magnetic axis frame)
+            maxis_x = 0.0
+            maxis_y = 0.0
+            maxis_z = magmom_array[ii]
+        else:
+            # SOC: three values per atom
+            maxis_x = magmom_array[3*ii + 0]
+            maxis_y = magmom_array[3*ii + 1]
+            maxis_z = magmom_array[3*ii + 2]
+        
+        # Apply rotation from magnetic axis frame to Cartesian
+        # FIXED: Corrected the bug on C code line 1316
+        # The correct formula uses sin(beta)*sin(alpha), not sin(beta)*cos(alpha)
+        magmom[ii, 0] = (np.cos(beta)*np.cos(alpha)*maxis_x - 
+                        np.sin(alpha)*maxis_y + 
+                        np.sin(beta)*np.cos(alpha)*maxis_z)
+        magmom[ii, 1] = (np.cos(beta)*np.sin(alpha)*maxis_x + 
+                        np.cos(alpha)*maxis_y + 
+                        np.sin(beta)*np.sin(alpha)*maxis_z)  # FIXED: was sin(beta)*cos(alpha)
+        magmom[ii, 2] = (-np.sin(beta)*maxis_x + 
+                        np.cos(beta)*maxis_z)
+    
+    return magmom
+
+
 class InputParseError(Exception):
     """Exception raised when parsing input file fails."""
     
